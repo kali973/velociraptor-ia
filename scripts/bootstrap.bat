@@ -37,14 +37,3 @@ echo.
 
 powershell -ExecutionPolicy Bypass -File "%SCRIPT_DIR%compilateur.ps1"
 
-if %errorlevel% neq 0 (
-    echo.
-    echo  ERREUR : compilation echouee (code %errorlevel%)
-    pause
-    exit /b %errorlevel%
-)
-
-echo.
-echo  Bootstrap termine avec succes.
-echo.
-pause

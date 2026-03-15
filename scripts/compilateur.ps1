@@ -80,6 +80,11 @@ if (Test-Path $AuditScript) {
         Write-Host "  [!] ATTENTION : Des secrets detectes dans le code." -ForegroundColor Red
     } elseif ($LASTEXITCODE -eq 0) {
         Write-Host "  [OK] Audit securite : OK" -ForegroundColor Green
+    } else {
+        # LASTEXITCODE=2 ou autre = avertissements CVE stdlib Go (non bloquants)
+        Write-Host "  [!] Audit : avertissements detectes (voir audit\)." -ForegroundColor Yellow
+        Write-Host "      Les CVE Go stdlib se corrigent en mettant a jour Go >= 1.25.8 :" -ForegroundColor Yellow
+        Write-Host "      https://golang.org/dl/" -ForegroundColor Cyan
     }
 } else {
     Write-Host "  [i] audit_securite.ps1 absent - audit ignore." -ForegroundColor Yellow
@@ -185,10 +190,11 @@ if ($BuildVelociraptor -or $UsbMode) {
 
 Write-Host ""
 Write-Host "[OK] Compilation reussie : $IHMExe" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Pour lancer l IHM : double-cliquer sur lancer.bat" -ForegroundColor Cyan
+Write-Host "  ou executer : .\lancer.bat" -ForegroundColor Cyan
+Write-Host ""
 
-# ===========================================================================
-# MODE USB
-# ===========================================================================
 
 if ($UsbMode) {
     $UsbRoot = "${UsbDrive}:\velociraptor-ia"
@@ -248,15 +254,28 @@ if ($UsbMode) {
 }
 
 # ===========================================================================
-# MODE LOCAL - Lancement IHM
+# MODE LOCAL - Lancement direct de l IHM
+# compilateur.ps1 lance lancer.bat directement pour eviter la chaine
+# bootstrap -> compilateur -> bootstrap -> lancer qui cause des double-lancements
 # ===========================================================================
 
 Write-Host ""
-Write-Host "Verification du port 8767..."
-Kill-Port -Port 8767
-
+Write-Host "=========================================="
+Write-Host "  Compilation terminee avec succes !"
+Write-Host "  $IHMExe disponible dans : $ScriptDir"
+Write-Host "=========================================="
 Write-Host ""
-Write-Host "Lancement IHM sur http://localhost:8767 ..."
-$exe = Join-Path $ScriptDir $IHMExe
-Start-Process $env:SystemRoot\System32\cmd.exe "/c start http://localhost:8767"
-& $exe -port 8767
+Write-Host "  Lancement de l IHM..." -ForegroundColor Cyan
+
+$LancerBat = Join-Path $ScriptDir "lancer.bat"
+if (Test-Path $LancerBat) {
+    # Lancer lancer.bat dans la meme fenetre cmd (bloquant)
+    # On utilise cmd /c pour eviter les problemes de chemin avec espaces
+    $proc = Start-Process -FilePath "cmd.exe" `
+        -ArgumentList "/c `"$LancerBat`"" `
+        -Wait -PassThru -NoNewWindow
+    exit $proc.ExitCode
+} else {
+    Write-Host "  [!] lancer.bat introuvable dans $ScriptDir" -ForegroundColor Yellow
+    exit 0
+}

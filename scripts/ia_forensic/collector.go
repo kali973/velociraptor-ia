@@ -1,7 +1,7 @@
 package main
 
 import (
-	"bytes"
+	"archive/zip"
 	"fmt"
 	"log"
 	"os"
@@ -120,48 +120,88 @@ var ArtifactCatalog = []ArtifactGroup{
 
 // ─── Détection du binaire Velociraptor ───────────────────────────────────────
 
-// findVelociraptorBin cherche le binaire Velociraptor dans :
-//  1. Le chemin explicite passé en config
-//  2. ./output/  (produit par make windows / go run make.go)
-//  3. La racine du projet (binaire téléchargé manuellement)
-//
-// La commande de build du projet est : make windows → go run make.go -v windowsDev
-// Cela produit output/velociraptor-vX.Y.Z-windows-amd64.exe
+// findVelociraptorBin cherche le binaire Velociraptor.
+// Sur Windows, seuls les fichiers .exe sont retournés (exec.Command
+// échoue avec un chemin absolu sans extension sur Windows).
 func findVelociraptorBin(cfgPath string) string {
+	isWindows := strings.EqualFold(os.Getenv("OS"), "Windows_NT") ||
+		strings.Contains(strings.ToLower(os.Getenv("COMSPEC")), "cmd.exe") ||
+		os.PathSeparator == '\\'
+
+	validate := func(p string) string {
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return ""
+		}
+		if _, err := os.Stat(abs); err != nil {
+			return ""
+		}
+		// Sur Windows, refuser un chemin sans .exe
+		if isWindows && !strings.HasSuffix(strings.ToLower(abs), ".exe") {
+			// Essayer avec .exe
+			withExt := abs + ".exe"
+			if _, err2 := os.Stat(withExt); err2 == nil {
+				return withExt
+			}
+			return "" // sans .exe non exécutable par chemin absolu sur Windows
+		}
+		return abs
+	}
+
+	// 1. Chemin explicite (config ou champ UI)
 	if cfgPath != "" {
-		if _, err := os.Stat(cfgPath); err == nil {
-			abs, _ := filepath.Abs(cfgPath)
-			return abs
+		if v := validate(cfgPath); v != "" {
+			return v
 		}
 	}
 
-	// Chercher dans output/ (résultat de make windows)
-	for _, base := range []string{".", "..", "../.."} {
+	// 2. Dossier output/ produit par : go run make.go -v windowsDev
+	//    Deux noms possibles selon la version de make.go :
+	//      - output/velociraptor.exe            (nom court)
+	//      - output/velociraptor-vX.Y.Z-windows-amd64.exe  (nom versionné)
+	for _, base := range []string{".", "..", "../..", "../../.."} {
 		outDir := filepath.Join(base, "output")
-		if entries, err := os.ReadDir(outDir); err == nil {
-			for _, e := range entries {
-				n := strings.ToLower(e.Name())
-				if strings.HasPrefix(n, "velociraptor") &&
-					strings.Contains(n, "windows") &&
-					strings.HasSuffix(n, ".exe") {
-					abs, _ := filepath.Abs(filepath.Join(outDir, e.Name()))
-					return abs
+
+		// Nom court en priorité (c'est ce que make.go -v windowsDev produit)
+		if v := validate(filepath.Join(outDir, "velociraptor.exe")); v != "" {
+			return v
+		}
+
+		// Nom versionné
+		entries, err := os.ReadDir(outDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			n := strings.ToLower(e.Name())
+			if strings.HasPrefix(n, "velociraptor") &&
+				strings.Contains(n, "windows") &&
+				strings.HasSuffix(n, ".exe") {
+				if v := validate(filepath.Join(outDir, e.Name())); v != "" {
+					return v
 				}
 			}
 		}
 	}
 
-	// Fallback : binaires génériques à la racine
-	for _, base := range []string{".", "..", "../.."} {
-		for _, name := range []string{
+	// 3. Binaires à la racine du projet (téléchargé manuellement)
+	var candidates []string
+	if isWindows {
+		candidates = []string{
 			"velociraptor.exe",
 			"velociraptor-windows-amd64.exe",
+		}
+	} else {
+		candidates = []string{
 			"velociraptor",
-		} {
-			p := filepath.Join(base, name)
-			if _, err := os.Stat(p); err == nil {
-				abs, _ := filepath.Abs(p)
-				return abs
+			"velociraptor-linux-amd64",
+			"velociraptor.exe",
+		}
+	}
+	for _, base := range []string{".", "..", "../..", "../../.."} {
+		for _, name := range candidates {
+			if v := validate(filepath.Join(base, name)); v != "" {
+				return v
 			}
 		}
 	}
@@ -201,120 +241,246 @@ func runBuildCollector(req CollectorRequest, cfg *Config) {
 		buildMu.Unlock()
 	}
 
+	// ── Résoudre le binaire ──────────────────────────────────────────────────
 	binPath := findVelociraptorBin(req.VeloPath)
 	if binPath == "" {
 		binPath = findVelociraptorBin(cfg.VeloRaptorBin)
 	}
 	if binPath == "" {
-		addOutput("[ERREUR] velociraptor.exe introuvable. Placez-le dans le dossier du projet ou configurez le chemin dans la config.")
+		addOutput("[ERREUR] velociraptor.exe introuvable.")
+		addOutput("[INFO] Compilez-le via le bouton 'Compiler velociraptor.exe' ou téléchargez-le depuis GitHub Releases.")
 		buildMu.Lock()
 		buildSuccess = false
 		buildMu.Unlock()
 		return
 	}
-	addOutput(fmt.Sprintf("[COLLECTOR] Binaire Velociraptor : %s", binPath))
+	addOutput(fmt.Sprintf("[COLLECTOR] Binaire : %s", binPath))
 
+	// ── Préparer le dossier de sortie ────────────────────────────────────────
 	outDir := cfg.OutputDir
 	if req.OutputDir != "" {
 		outDir = req.OutputDir
 	}
-	_ = os.MkdirAll(outDir, 0755)
+	absOutDir, _ := filepath.Abs(outDir)
+	_ = os.MkdirAll(absOutDir, 0755)
 
 	targetOS := req.TargetOS
 	if targetOS == "" {
 		targetOS = "windows"
 	}
 
-	addOutput(fmt.Sprintf("[COLLECTOR] Démarrage : %d artefact(s), cible=%s", len(req.Artifacts), targetOS))
-
-	// Construire les arguments velociraptor
-	// Mode : velociraptor.exe artifacts collect --output <zip> <artifact1> <artifact2> ...
-	// Ou en mode offline collector :
-	// velociraptor.exe artifacts collect --output <dir> --format=jsonl <artifacts...>
 	ts := time.Now().Format("20060102_150405")
-	ext := ".exe"
-	if targetOS != "windows" {
-		ext = ""
-	}
+	zipOut := filepath.Join(absOutDir, fmt.Sprintf("Collection_%s_%s.zip", targetOS, ts))
 
-	// Tentative avec la commande "artifacts collect" (collecte locale)
-	collectorOut := filepath.Join(outDir, fmt.Sprintf("Collection_%s_%s%s", targetOS, ts, ext))
-	zipOut := filepath.Join(outDir, fmt.Sprintf("Collection_%s_%s.zip", targetOS, ts))
+	addOutput(fmt.Sprintf("[COLLECTOR] Démarrage : %d artefact(s), cible=%s", len(req.Artifacts), targetOS))
+	addOutput(fmt.Sprintf("[COLLECTOR] Sortie ZIP : %s", zipOut))
 
-	// D'abord essayer de construire un offline collector
-	args := []string{
+	// ── Syntaxe correcte Velociraptor pour collecte locale ───────────────────
+	//
+	// velociraptor.exe artifacts collect \
+	//   --output /path/to/output_dir \
+	//   --format jsonl \
+	//   ArtifactName1 ArtifactName2 ...
+	//
+	// Le répertoire de sortie est créé par Velociraptor.
+	// Pour récupérer un ZIP on pointe --output vers un dossier temporaire
+	// puis on zippe nous-mêmes, OU on utilise le mode "collector" :
+	//
+	// velociraptor.exe collector \
+	//   --definitions artifact1,artifact2 \
+	//   --output zippath.zip
+	//
+	// On essaie les deux modes en fallback.
+
+	// ── Mode 1 : artifacts collect (collecte directe, sortie répertoire) ─────
+	collectDir := filepath.Join(absOutDir, fmt.Sprintf("col_%s", ts))
+	_ = os.MkdirAll(collectDir, 0755)
+
+	args1 := append([]string{
 		"artifacts", "collect",
-		"--output", zipOut,
+		"--output", collectDir,
 		"--format", "jsonl",
-	}
-	args = append(args, req.Artifacts...)
+	}, req.Artifacts...)
 
-	addOutput(fmt.Sprintf("[COLLECTOR] Commande : %s %s", filepath.Base(binPath), strings.Join(args[:4], " ")+" [artefacts...]"))
+	addOutput(fmt.Sprintf("[COLLECTOR] Commande : %s artifacts collect --output %s --format jsonl [%d artefacts]",
+		filepath.Base(binPath), collectDir, len(req.Artifacts)))
 
-	cmd := exec.Command(binPath, args...)
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
+	cmd1 := exec.Command(binPath, args1...)
+	out1 := &lineCollector{}
+	cmd1.Stdout = out1
+	cmd1.Stderr = out1
 
-	err := cmd.Run()
-	output := outBuf.String()
-
-	if output != "" {
-		for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-			if line != "" {
-				addOutput("[VELO] " + line)
-			}
+	err1 := cmd1.Run()
+	for _, l := range out1.lines {
+		if l != "" {
+			addOutput("[VELO] " + l)
 		}
 	}
 
-	if err != nil {
-		// Fallback : essayer de construire un collector standalone
-		addOutput("[COLLECTOR] Mode artifacts collect échoué, tentative offline collector...")
-		args2 := []string{
-			"artifacts", "collect",
-			"--output", collectorOut,
-		}
-		args2 = append(args2, req.Artifacts...)
-		cmd2 := exec.Command(binPath, args2...)
-		var out2 bytes.Buffer
-		cmd2.Stdout = &out2
-		cmd2.Stderr = &out2
-		err2 := cmd2.Run()
-		out2Str := out2.String()
-		for _, line := range strings.Split(strings.TrimSpace(out2Str), "\n") {
-			if line != "" {
-				addOutput("[VELO] " + line)
+	if err1 == nil {
+		// Vérifier que des fichiers ont été créés
+		if hasFiles(collectDir) {
+			// Zipper le dossier de collecte
+			if zipErr := zipDirectory(collectDir, zipOut); zipErr == nil {
+				_ = os.RemoveAll(collectDir)
+				addOutput(fmt.Sprintf("[COLLECTOR] ✓ Collection ZIP : %s", zipOut))
+				buildMu.Lock()
+				buildSuccess = true
+				buildResult = zipOut
+				buildMu.Unlock()
+				return
 			}
-		}
-		if err2 != nil {
-			addOutput(fmt.Sprintf("[ERREUR] Velociraptor a échoué : %v", err2))
-			addOutput("[INFO] Assurez-vous que velociraptor.exe peut accéder aux artefacts demandés.")
-			addOutput("[INFO] Certains artefacts nécessitent des droits administrateur.")
+			// ZIP échoué mais le dossier existe
+			addOutput(fmt.Sprintf("[COLLECTOR] ✓ Collection (dossier) : %s", collectDir))
 			buildMu.Lock()
-			buildSuccess = false
+			buildSuccess = true
+			buildResult = collectDir
 			buildMu.Unlock()
 			return
 		}
-		buildMu.Lock()
-		buildSuccess = true
-		buildResult = collectorOut
-		buildMu.Unlock()
-		addOutput(fmt.Sprintf("[COLLECTOR] ✓ Collection générée : %s", collectorOut))
-		return
+		addOutput("[COLLECTOR] Mode 1 : commande OK mais aucun fichier produit")
+	} else {
+		addOutput(fmt.Sprintf("[COLLECTOR] Mode 1 échoué : %v", err1))
+	}
+	_ = os.RemoveAll(collectDir)
+
+	// ── Mode 2 : velociraptor gui collector (Build Offline Collector) ─────────
+	// Génère un executable collector autonome via l'API REST
+	// → non disponible en ligne de commande directe, skip
+
+	// ── Mode 3 : velociraptor collector --config yaml ─────────────────────────
+	yamlContent := buildCollectorYAML(req.Artifacts, targetOS)
+	yamlPath := filepath.Join(absOutDir, fmt.Sprintf("collector_config_%s.yaml", ts))
+	if err := os.WriteFile(yamlPath, []byte(yamlContent), 0600); err == nil {
+		defer os.Remove(yamlPath)
+
+		args3 := []string{
+			"collector", "--config", yamlPath,
+			"--output", zipOut,
+		}
+		addOutput(fmt.Sprintf("[COLLECTOR] Mode 3 : velociraptor collector --config %s", filepath.Base(yamlPath)))
+
+		cmd3 := exec.Command(binPath, args3...)
+		out3 := &lineCollector{}
+		cmd3.Stdout = out3
+		cmd3.Stderr = out3
+
+		err3 := cmd3.Run()
+		for _, l := range out3.lines {
+			if l != "" {
+				addOutput("[VELO] " + l)
+			}
+		}
+
+		if err3 == nil {
+			if _, statErr := os.Stat(zipOut); statErr == nil {
+				addOutput(fmt.Sprintf("[COLLECTOR] ✓ Collection ZIP (mode collector) : %s", zipOut))
+				buildMu.Lock()
+				buildSuccess = true
+				buildResult = zipOut
+				buildMu.Unlock()
+				return
+			}
+		}
+		addOutput(fmt.Sprintf("[COLLECTOR] Mode 3 échoué : %v", err3))
 	}
 
-	// Vérifier que le ZIP a été créé
-	if _, err := os.Stat(zipOut); err == nil {
-		buildMu.Lock()
-		buildSuccess = true
-		buildResult = zipOut
-		buildMu.Unlock()
-		addOutput(fmt.Sprintf("[COLLECTOR] ✓ Collection ZIP générée : %s", zipOut))
-	} else {
-		buildMu.Lock()
-		buildSuccess = true
-		buildResult = outDir
-		buildMu.Unlock()
-		addOutput(fmt.Sprintf("[COLLECTOR] ✓ Collection dans : %s", outDir))
+	// ── Aucun mode n'a fonctionné ─────────────────────────────────────────────
+	addOutput("[ERREUR] Tous les modes de collecte ont échoué.")
+	addOutput("[INFO] Lancez la collecte manuellement depuis Velociraptor GUI (bouton 'Ouvrir Velociraptor GUI')")
+	addOutput("[INFO] puis importez le ZIP obtenu à l'Étape 2.")
+	buildMu.Lock()
+	buildSuccess = false
+	buildMu.Unlock()
+}
+
+// buildCollectorYAML génère un YAML de configuration pour velociraptor collector.
+func buildCollectorYAML(artifacts []string, targetOS string) string {
+	var sb strings.Builder
+	sb.WriteString("autoexec:\n")
+	sb.WriteString("  argv:\n")
+	sb.WriteString("  - artifacts\n")
+	sb.WriteString("  - collect\n")
+	sb.WriteString("  - --format\n")
+	sb.WriteString("  - jsonl\n")
+	for _, a := range artifacts {
+		sb.WriteString(fmt.Sprintf("  - %s\n", a))
 	}
+	sb.WriteString(fmt.Sprintf("# target_os: %s\n", targetOS))
+	return sb.String()
+}
+
+// lineCollector collecte les lignes de sortie d'une commande.
+type lineCollector struct {
+	lines []string
+	buf   string
+}
+
+func (lc *lineCollector) Write(p []byte) (int, error) {
+	lc.buf += string(p)
+	for {
+		idx := strings.IndexByte(lc.buf, '\n')
+		if idx < 0 {
+			break
+		}
+		line := strings.TrimRight(lc.buf[:idx], "\r")
+		lc.lines = append(lc.lines, line)
+		lc.buf = lc.buf[idx+1:]
+	}
+	return len(p), nil
+}
+
+// hasFiles retourne true si le répertoire contient au moins un fichier.
+func hasFiles(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// zipDirectory crée un ZIP du contenu d'un répertoire.
+func zipDirectory(srcDir, destZip string) error {
+	zf, err := os.Create(destZip)
+	if err != nil {
+		return err
+	}
+	defer zf.Close()
+
+	w := zip.NewWriter(zf)
+	defer w.Close()
+
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		rel, _ := filepath.Rel(srcDir, path)
+		fw, err := w.Create(filepath.ToSlash(rel))
+		if err != nil {
+			return err
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		buf := make([]byte, 32*1024)
+		for {
+			n, readErr := f.Read(buf)
+			if n > 0 {
+				if _, wErr := fw.Write(buf[:n]); wErr != nil {
+					return wErr
+				}
+			}
+			if readErr != nil {
+				break
+			}
+		}
+		return nil
+	})
 }
