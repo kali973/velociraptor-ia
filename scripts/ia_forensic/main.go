@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"flag"
@@ -196,7 +197,7 @@ func handleBuildStatusHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ─── Velociraptor GUI ─────────────────────────────────────────────────────────
 
-// veloGUIURL stocke l'URL avec token capturée depuis velociraptor gui stdout.
+// veloGUIURL stocke l'URL avec token capturée depuis velociraptor gui stderr.
 var veloGUIURL string
 var veloGUIURLMu sync.Mutex
 
@@ -213,64 +214,92 @@ func handleLaunchVeloGUI(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[VELO] Lancement GUI : %s", bin)
 
-	// Réinitialiser l'URL
 	veloGUIURLMu.Lock()
 	veloGUIURL = ""
 	veloGUIURLMu.Unlock()
 
-	// velociraptor gui génère automatiquement une URL avec token dans sa sortie.
-	// Format : "https://localhost:8889/app/index.html?username=...&password=..."
-	// On capture stdout/stderr pour extraire cette URL et l'ouvrir directement
-	// sans que l'utilisateur n'ait à saisir de mot de passe.
+	// velociraptor gui écrit dans stderr une ligne du type :
+	//   [INFO] GUI is ready. Access at https://localhost:8889/app/index.html?username=admin&password=XXXXX
+	// On lit le pipe stderr ligne par ligne SANS bloquer le processus.
 	cmd := exec.Command(bin, "gui")
 
-	// Pipe stdout+stderr pour capturer l'URL
+	// Pipe stderr (velociraptor écrit ses logs dans stderr)
+	stderrPipe, errPipe := cmd.StderrPipe()
+	if errPipe != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"pipe stderr: %v"}`, errPipe), http.StatusInternalServerError)
+		return
+	}
+	// Pipe stdout aussi au cas où
+	stdoutPipe, _ := cmd.StdoutPipe()
+
+	// Démarrer le processus
+	if err := cmd.Start(); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"démarrage velociraptor: %v"}`, err), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("[VELO] PID %d démarré, attente de l'URL GUI...", cmd.Process.Pid)
+
+	// Lire stderr ligne par ligne pour capturer l'URL avec le token
 	go func() {
-		out, err := cmd.CombinedOutput() // non bloquant : on lance en background
-		_ = err
-		// Parser la sortie pour trouver l'URL avec le token
-		lines := strings.Split(string(out), "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "localhost") && strings.Contains(line, "password=") {
-				// Extraire l'URL
-				for _, word := range strings.Fields(line) {
-					if strings.HasPrefix(word, "http") && strings.Contains(word, "password=") {
-						veloGUIURLMu.Lock()
-						veloGUIURL = strings.TrimRight(word, "\"'")
-						veloGUIURLMu.Unlock()
-						log.Printf("[VELO] URL GUI capturée : %s", veloGUIURL)
-						openBrowser(veloGUIURL)
-						return
-					}
-				}
+		scanner := bufio.NewScanner(stderrPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			log.Printf("[VELO] %s", line)
+			url := extractVeloURL(line)
+			if url != "" {
+				veloGUIURLMu.Lock()
+				veloGUIURL = url
+				veloGUIURLMu.Unlock()
+				log.Printf("[VELO] URL capturée : %s", url)
+				openBrowser(url)
+				return
 			}
 		}
 	}()
 
-	if err := cmd.Start(); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%v"}`, err), http.StatusInternalServerError)
-		return
-	}
-
-	// Ouvrir le navigateur après délai — velociraptor gui prend ~2s à démarrer.
-	// L'URL avec token sera capturée et rouvrira le bon lien automatiquement.
+	// Lire stdout aussi (certaines versions y écrivent)
 	go func() {
-		// Attendre que velociraptor démarre et émette son URL
-		for i := 0; i < 15; i++ {
-			time.Sleep(1 * time.Second)
-			veloGUIURLMu.Lock()
-			url := veloGUIURL
-			veloGUIURLMu.Unlock()
+		scanner := bufio.NewScanner(stdoutPipe)
+		for scanner.Scan() {
+			line := scanner.Text()
+			url := extractVeloURL(line)
 			if url != "" {
-				return // déjà ouvert par la goroutine de capture
+				veloGUIURLMu.Lock()
+				if veloGUIURL == "" {
+					veloGUIURL = url
+					veloGUIURLMu.Unlock()
+					log.Printf("[VELO] URL (stdout) capturée : %s", url)
+					openBrowser(url)
+				} else {
+					veloGUIURLMu.Unlock()
+				}
+				return
 			}
 		}
-		// Fallback si on n'a pas capturé l'URL (version GUI sans token dans stdout)
+	}()
+
+	// Fallback : ouvrir le navigateur après 5s si l'URL n'a pas été capturée.
+	// Velociraptor GUI en mode local crée les credentials dans un fichier
+	// ~/.config/velociraptor/ et affiche l'URL uniquement dans ses logs.
+	// Si on n'a pas capturé l'URL, on ouvre quand même — l'utilisateur peut
+	// saisir les credentials depuis le fichier de config Velociraptor.
+	go func() {
+		for i := 0; i < 8; i++ {
+			time.Sleep(1 * time.Second)
+			veloGUIURLMu.Lock()
+			found := veloGUIURL != ""
+			veloGUIURLMu.Unlock()
+			if found {
+				return
+			}
+		}
+		// Ouvrir sans token — l'URL avec credentials est affichée dans les logs
+		log.Printf("[VELO] URL non capturée après 8s. Ouverture sur https://localhost:8889")
+		log.Printf("[VELO] Consultez les logs de Velociraptor pour l'URL complète avec mot de passe")
 		veloGUIURLMu.Lock()
 		if veloGUIURL == "" {
-			veloGUIURL = "https://localhost:8889"
 			veloGUIURLMu.Unlock()
-			log.Printf("[VELO] URL non capturée, ouverture directe (sans token)")
 			openBrowser("https://localhost:8889")
 		} else {
 			veloGUIURLMu.Unlock()
@@ -278,7 +307,35 @@ func handleLaunchVeloGUI(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"ok":true,"msg":"Velociraptor GUI en cours de démarrage... L'interface s'ouvrira automatiquement."}`))
+	w.Write([]byte(`{"ok":true,"msg":"Velociraptor GUI démarré — l'interface s'ouvrira automatiquement avec les credentials."}`))
+}
+
+// extractVeloURL cherche une URL Velociraptor avec token dans une ligne de log.
+// Velociraptor écrit typiquement :
+//
+//	"[INFO] ... GUI is ready at https://localhost:8889/app/index.html?username=admin&password=XXXXX"
+//	"Point your browser at https://localhost:8889/..."
+func extractVeloURL(line string) string {
+	lower := strings.ToLower(line)
+	// Mots-clés qui signalent la ligne contenant l'URL GUI
+	if !strings.Contains(lower, "localhost") && !strings.Contains(lower, "127.0.0.1") {
+		return ""
+	}
+	// Chercher un token dans l'URL (password= ou VelociraptorCSRF= ou token=)
+	hasToken := strings.Contains(line, "password=") ||
+		strings.Contains(line, "VelociraptorCSRF=") ||
+		strings.Contains(line, "token=")
+	if !hasToken {
+		return ""
+	}
+	// Extraire le premier mot qui ressemble à une URL
+	for _, word := range strings.Fields(line) {
+		word = strings.Trim(word, `"'<>`)
+		if strings.HasPrefix(word, "http") && strings.Contains(word, "localhost") {
+			return word
+		}
+	}
+	return ""
 }
 
 func handleDetectVelo(w http.ResponseWriter, r *http.Request) {
