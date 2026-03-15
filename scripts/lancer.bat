@@ -1,38 +1,26 @@
 @echo off
 :: ================================================================
-:: lancer.bat - RF Sandbox Go (execution depuis cle USB)
+:: lancer.bat - Velociraptor-IA (lancement IHM + Velociraptor)
 ::
 ::  1. Detecte le proxy systeme Windows (registre + env)
-::     - Proxy actif  -> proxy de config\config.json conserve
-::     - Pas de proxy -> proxy vide (connexion directe API RF)
-::  2. Verifie le vault (cle + secrets)
-::  3. Lance rf-sandbox.exe -ui
+::  2. Met a jour la config proxy de l'IHM
+::  3. Lance l'IHM forensique IA (ia_forensic.exe)
+::     -> http://localhost:8767
+::  4. L'IHM permet ensuite de lancer velociraptor.exe gui
 :: ================================================================
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
 echo.
 echo  ==========================================
-echo    RF Sandbox Go - USB
+echo    Velociraptor-IA - Demarrage
 echo  ==========================================
 echo.
 
-:: Verification des executables
-if not exist "%~dp0rf-sandbox.exe" (
-    echo  ERREUR : rf-sandbox.exe introuvable.
-    echo  Relancez bootstrap.bat pour recompiler.
-    pause
-    exit /b 1
-)
-if not exist "%~dp0vault.exe" (
-    echo  ERREUR : vault.exe introuvable.
-    echo  Relancez bootstrap.bat pour recompiler.
-    pause
-    exit /b 1
-)
-if not exist "%~dp0update-proxy.exe" (
-    echo  ERREUR : update-proxy.exe introuvable.
-    echo  Relancez bootstrap.bat pour recompiler.
+:: Verification IHM
+if not exist "%~dp0ia_forensic.exe" (
+    echo  ERREUR : ia_forensic.exe introuvable.
+    echo  Relancez bootstrap.bat pour compiler.
     pause
     exit /b 1
 )
@@ -48,42 +36,20 @@ for /f "tokens=3" %%v in (
 if not "%HTTP_PROXY%"==""  set "PROXY_ACTIVE=1"
 if not "%HTTPS_PROXY%"=="" set "PROXY_ACTIVE=1"
 
-:: Mise a jour config\config.json via update-proxy.exe (Go natif)
-"%~dp0update-proxy.exe" -proxy-active %PROXY_ACTIVE% -config "%~dp0config\config.json"
+powershell -ExecutionPolicy Bypass -File "%~dp0scripts\update_proxy.ps1" -ProxyActive %PROXY_ACTIVE%
 
 if "%PROXY_ACTIVE%"=="1" (
-    echo  [OK] Proxy detecte - proxy de config\config.json utilise.
+    echo  [OK] Proxy detecte - proxy_url de config\config.json conserve.
 ) else (
-    echo  [OK] Aucun proxy - connexion directe a https://sandbox.recordedfuture.com
+    echo  [OK] Aucun proxy - connexion directe.
 )
 
-:: Verification du vault
+:: Lancement IHM
 echo.
-echo  Verification du vault...
-if not exist "%~dp0config\.vault.key" (
-    echo  Premiere utilisation : initialisation du vault...
-    vault.exe init
-    if %errorlevel% neq 0 (
-        echo  ERREUR : vault init echoue.
-        pause
-        exit /b 1
-    )
-    vault.exe seal
-    if %errorlevel% neq 0 (
-        echo  ERREUR : vault seal echoue.
-        pause
-        exit /b 1
-    )
-) else (
-    vault.exe status
-)
-
-:: Lancement
+echo  Lancement IHM sur http://localhost:8767 ...
 echo.
-echo  Lancement sur http://localhost:8766 ...
-echo.
-start "" http://localhost:8766
-rf-sandbox.exe -ui
+start "" http://localhost:8767
+ia_forensic.exe -port 8767
 
 endlocal
 pause
