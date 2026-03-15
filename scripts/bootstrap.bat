@@ -1,15 +1,7 @@
 @echo off
 :: =============================================================================
 :: bootstrap.bat - Lanceur unique Velociraptor-IA
-::
-:: Comportement automatique :
-::   - Verifie les prerequis (Go, GCC, Node.js, Make)
-::   - Compile l'IHM forensique IA (scripts\ia_forensic\)
-::   - Compile Velociraptor (make windows) si demande
-::   - Lance l'IHM sur http://localhost:8767
-::
-:: UTILISATION :
-::   Clic droit sur bootstrap.bat > "Executer en tant qu'Administrateur"
+:: UTILISATION : Clic droit > "Executer en tant qu'Administrateur"
 :: =============================================================================
 
 net session >nul 2>&1
@@ -31,9 +23,18 @@ echo.
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_DIR=%SCRIPT_DIR%.."
 
-:: Lancer le compilateur PowerShell qui orchestre tout
 echo  Lancement de la compilation...
 echo.
 
 powershell -ExecutionPolicy Bypass -File "%SCRIPT_DIR%compilateur.ps1"
+set "PS_CODE=%errorlevel%"
 
+:: FIX B8: verifier le code de retour de compilateur.ps1.
+:: Code 1 = erreur critique (secrets detectes ou compilation echouee).
+:: Code 0 = succes. Autre = avertissements non bloquants (CVE Go stdlib).
+if "%PS_CODE%"=="1" (
+    echo.
+    echo  ERREUR : compilation echouee ou secrets detectes. Consultez les logs.
+    pause
+    exit /b 1
+)

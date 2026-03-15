@@ -107,7 +107,10 @@ func parseVelociraptorZIP(zipPath string) (*ParsedCollection, error) {
 		}
 
 		count := 0
-		for scanner.Scan() && count < 100 { // max 100 lignes par artefact
+		// FIX B3: limite augmentée de 100 à 500 lignes par artefact.
+		// 100 lignes était insuffisant pour Event Logs, Netstat, etc.
+		// qui peuvent contenir plusieurs centaines d'entrées pertinentes.
+		for scanner.Scan() && count < 500 {
 			line := scanner.Bytes()
 			if len(line) == 0 {
 				continue

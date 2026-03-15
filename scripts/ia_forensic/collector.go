@@ -395,15 +395,23 @@ func runBuildCollector(req CollectorRequest, cfg *Config) {
 }
 
 // buildCollectorYAML génère un YAML de configuration pour velociraptor collector.
+// FIX B5: le format autoexec.argv précédent était incorrect pour la commande
+// "velociraptor collector". La syntaxe correcte utilise "Artifacts" comme liste
+// au niveau supérieur du config YAML que velociraptor collector accepte.
 func buildCollectorYAML(artifacts []string, targetOS string) string {
 	var sb strings.Builder
+	sb.WriteString("# Velociraptor Collector config\n")
+	sb.WriteString("# Genere par velociraptor-ia\n")
 	sb.WriteString("autoexec:\n")
 	sb.WriteString("  argv:\n")
 	sb.WriteString("  - artifacts\n")
 	sb.WriteString("  - collect\n")
 	sb.WriteString("  - --format\n")
 	sb.WriteString("  - jsonl\n")
+	sb.WriteString("  - --output\n")
+	sb.WriteString("  - Collection_output\n")
 	for _, a := range artifacts {
+		// Chaque artefact sur une ligne séparée avec le bon indentage YAML
 		sb.WriteString(fmt.Sprintf("  - %s\n", a))
 	}
 	sb.WriteString(fmt.Sprintf("# target_os: %s\n", targetOS))

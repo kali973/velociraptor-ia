@@ -3,9 +3,26 @@
 param([int]$ProxyActive)
 
 $configPath = Join-Path (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)) "config\config.json"
+
 if (-not (Test-Path $configPath)) {
-    Write-Host "  [WARN] config\config.json introuvable : $configPath"
-    exit 0
+    # Creer config.json avec les valeurs par defaut si absent
+    $configDir = Split-Path -Parent $configPath
+    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    $defaultCfg = @{
+        velociraptor_bin = ""
+        output_dir       = "..\collections"
+        reports_dir      = "..\reports"
+        ui_port          = "8767"
+        proxy_url        = ""
+        tls_skip_verify  = $false
+        proxy_auth_type  = ""
+        proxy_user       = ""
+        proxy_pass       = ""
+        moteur_dir       = ""
+    }
+    $defaultCfg | ConvertTo-Json -Depth 5 |
+        ForEach-Object { [System.IO.File]::WriteAllText($configPath, $_, (New-Object System.Text.UTF8Encoding $false)) }
+    Write-Host "  [OK] config\config.json cree avec les valeurs par defaut."
 }
 
 $raw = [System.IO.File]::ReadAllText($configPath, [System.Text.Encoding]::UTF8)

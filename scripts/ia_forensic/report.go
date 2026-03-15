@@ -132,15 +132,23 @@ func handleExportReport(w http.ResponseWriter, r *http.Request) {
 
 func findDocxGen() string {
 	exe, _ := os.Executable()
+	// FIX B4: ajout de docx_forensic.js dans les chemins de recherche.
+	// docx_forensic.js est le script adapté au format ForensicReport.
+	// Si absent, on tente docx_gen.js standard comme fallback.
 	candidates := []string{
+		"docx_forensic.js",
+		"../docx_forensic.js",
 		"docx_gen.js",
 		"../docx_gen.js",
+		filepath.Join(filepath.Dir(exe), "docx_forensic.js"),
 		filepath.Join(filepath.Dir(exe), "docx_gen.js"),
+		filepath.Join(filepath.Dir(exe), "..", "docx_forensic.js"),
 		filepath.Join(filepath.Dir(exe), "..", "docx_gen.js"),
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
 			abs, _ := filepath.Abs(p)
+			log.Printf("[RAPPORT] Script Node.js trouvé : %s", abs)
 			return abs
 		}
 	}

@@ -151,7 +151,7 @@ if (Test-Path $GosecExe) {
         Write-Status "  [OK] Aucune vulnerabilite." "Green"
     }
     $raw | Where-Object { $_ -match "^Summary" } | Select-Object -First 1 |
-        ForEach-Object { $gosecLines += "  $($_.Trim())" }
+        ForEach-Object { $gosecLines += "  $([string]$_)".Trim() }
     $gosecLines += ""
     $gosecLines += "  Regles exclues : G304 (chemins controles), G107 (URLs configurables)"
 } else {
@@ -186,15 +186,16 @@ if (Test-Path $GovulnExe) {
         $vulnStatut = "CRITIQUE"
         $vulnLines += "[CRITIQUE] CVE detectes dans les dependances :"
         foreach ($v in $hits) {
-            $vulnLines += "  $($v.Trim())"
-            Write-Status "    $v" "Red"
+            $vs = [string]$v
+            $vulnLines += "  $($vs.Trim())"
+            Write-Status "    $vs" "Red"
         }
         $vulnLines += "  Action : go get -u ./... && go mod tidy"
     } else {
         $vulnLines += "[OK] Aucun CVE detecte dans les dependances."
         Write-Status "  [OK] Aucun CVE." "Green"
         $vo | Where-Object { $_ -match "No vulnerabilities|packages" } | Select-Object -First 1 |
-            ForEach-Object { $vulnLines += "  $($_.Trim())" }
+            ForEach-Object { $vulnLines += "  $([string]$_)".Trim() }
     }
 } else {
     $vulnStatut = "SKIP"
@@ -426,7 +427,9 @@ $goLines = @(
     '    d.fiID   = d.add("<<\\n/Type /Font\\n/Subtype /Type1\\n/BaseFont /Helvetica-Oblique\\n/Encoding /WinAnsiEncoding\\n>>")',
     '',
     '    // Calcul lignes par page',
-    '    linesPerPage := int((mT-mB)/12.0)',
+    '    // Calcul lignes par page',
+    '    linesPerPageF := (mT - mB) / 12.0',
+    '    linesPerPage := int(linesPerPageF)',
     '    for len(all)>0{',
     '        n:=linesPerPage; if n>len(all){n=len(all)}',
     '        d.newPage(all[:n]); all=all[n:]',

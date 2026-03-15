@@ -130,7 +130,9 @@ if ($LASTEXITCODE -ne 0) {
     Pop-Location; exit 1
 }
 
-Write-Host "  -> go mod tidy"
+# FIX B1: go.sum absent du depot -> go mod tidy le regenere.
+# Sans go.sum, 'go build' echoue avec "missing go.sum entry for module".
+Write-Host "  -> go mod tidy (generation/verification go.sum)"
 go mod tidy
 if ($LASTEXITCODE -ne 0) { Write-Host "ERREUR : go mod tidy echoue"; Pop-Location; exit 1 }
 
@@ -269,12 +271,11 @@ Write-Host "  Lancement de l IHM..." -ForegroundColor Cyan
 
 $LancerBat = Join-Path $ScriptDir "lancer.bat"
 if (Test-Path $LancerBat) {
-    # Lancer lancer.bat dans la meme fenetre cmd (bloquant)
-    # On utilise cmd /c pour eviter les problemes de chemin avec espaces
-    $proc = Start-Process -FilePath "cmd.exe" `
-        -ArgumentList "/c `"$LancerBat`"" `
-        -Wait -PassThru -NoNewWindow
-    exit $proc.ExitCode
+    # FIX B6: Start-Process -Wait bloquait PowerShell et ouvrait une
+    # fenetre separee. On utilise cmd /c call pour rester dans la meme
+    # console et heriter des variables d'environnement correctement.
+    & cmd.exe /c "`"$LancerBat`""
+    exit $LASTEXITCODE
 } else {
     Write-Host "  [!] lancer.bat introuvable dans $ScriptDir" -ForegroundColor Yellow
     exit 0

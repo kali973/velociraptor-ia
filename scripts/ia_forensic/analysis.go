@@ -185,7 +185,10 @@ func callLlama(baseURL, prompt, modelName string) (string, error) {
 	}
 	data, _ := json.Marshal(req)
 
-	client := &http.Client{Timeout: 300 * time.Second}
+	// FIX B7: timeout augmenté de 300s à 600s.
+	// Qwen2.5 14B peut prendre >5 minutes sur CPU pour générer l'analyse complète.
+	// 300s provoquait des erreurs "context deadline exceeded" sur les grandes collectes.
+	client := &http.Client{Timeout: 600 * time.Second}
 	resp, err := client.Post(baseURL+"/v1/chat/completions", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return "", fmt.Errorf("appel llama API : %w", err)
