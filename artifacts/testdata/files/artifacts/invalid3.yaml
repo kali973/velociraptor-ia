@@ -1,3 +1,0 @@
-name: WarnningExecve
-sources:
-- query: SELECT * FROM execve(argv=["ls"])

@@ -1,7 +1,0 @@
-Query: SELECT token(pid=getpid()).Username =~ "runneradmin" As Username from scope()
-Output: [
- {
-  "Username": true
- }
-]
-

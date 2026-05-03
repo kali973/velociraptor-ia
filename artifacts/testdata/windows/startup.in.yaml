@@ -1,5 +1,0 @@
-Queries:
-  - SELECT Name, Details, Enabled
-    FROM Artifact.Windows.Sys.StartupItems()
-    WHERE Name =~ 'msht' AND Details =~ "Hello"
-    ORDER BY Name

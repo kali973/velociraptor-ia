@@ -1,5 +1,0 @@
-Queries:
- - |
-   SELECT *, OSPath.Basename AS OSPath
-   FROM Artifact.Linux.Ssh.AuthorizedKeys(
-      sshKeyFilesGlob=srcDir + '/artifacts/testdata/files/linux/authorized_keys')

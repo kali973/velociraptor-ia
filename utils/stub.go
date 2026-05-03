@@ -1,8 +1,0 @@
-//go:build !linux && !darwin && !freebsd
-// +build !linux,!darwin,!freebsd
-
-package utils
-
-func CheckDirWritable(dirname string) error {
-	return nil
-}

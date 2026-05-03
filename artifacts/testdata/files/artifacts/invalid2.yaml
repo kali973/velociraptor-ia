@@ -1,3 +1,0 @@
-name: BrokenQuery
-sources:
-- query: SELECT * FROM nosuchplugin()

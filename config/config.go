@@ -1,218 +1,111 @@
-/*
-Velociraptor - Dig Deeper
-Copyright (C) 2019-2025 Rapid7 Inc.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as published
-by the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
-
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
+// Package config charge et expose la configuration runtime depuis config.json.
+//
+// v0.4.0 : suppression de ClaudeAPIKey. Le projet est local-only.
+// L'IA tourne sur llama-server local (cf. internal/engine), aucun appel
+// reseau cloud n'est fait par velociraptor a partir de cette version.
+//
+//  1. config.json embarque (fallback) via go:embed.
+//  2. config.json a cote de l'executable (override modifiable, prioritaire).
+//  3. Dechiffrement transparent du HFToken (modeles HF gated optionnels).
 package config
 
 import (
-	"runtime"
+	_ "embed"
+	"encoding/json"
+	"log"
+	"os"
+	"path/filepath"
 
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-	config_proto "www.velocidex.com/golang/velociraptor/config/proto"
-	constants "www.velocidex.com/golang/velociraptor/constants"
-	"www.velocidex.com/golang/velociraptor/utils"
+	"velociraptor/vault"
 )
 
-// Embed build time constants into here for reporting client version.
-// https://husobee.github.io/golang/compile/time/variables/2015/12/03/compile-time-const.html
-var (
-	build_time  string
-	commit_hash string
-	ci_run_url  string
+//go:embed config.json
+var configFile []byte
 
-	versionCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "velociraptor_build",
-		Help: "Current version of running binary.",
-	}, []string{"commit_hash", "build_time"})
-)
+// AppConfig contient la configuration runtime.
+type AppConfig struct {
+	// Champs partages avec rf-sandbox-go (semantique identique pour faciliter
+	// un eventuel merge ou partage de moteur).
+	UIPort        string `json:"ui_port"`
+	HFToken       string `json:"hf_token,omitempty"` // token HuggingFace pour modeles gated
+	ListenAddress string `json:"listen_address,omitempty"`
+	Lang          string `json:"lang,omitempty"`
+	APIKey        string `json:"api_key,omitempty"` // Bearer pour /api/* (vide = pas d'auth)
 
-func GetVersion() *config_proto.Version {
-	return &config_proto.Version{
-		Name:         "velociraptor",
-		Version:      constants.VERSION,
-		BuildTime:    build_time,
-		Commit:       commit_hash,
-		CiBuildUrl:   ci_run_url,
-		Compiler:     runtime.Version(),
-		System:       runtime.GOOS,
-		Architecture: utils.GetArch(),
-	}
+	// Moteur IA local (v0.4.0)
+	DefaultModel    string `json:"default_model,omitempty"`     // filename GGUF du modele par defaut
+	AutoStartEngine bool   `json:"auto_start_engine,omitempty"` // demarre llama-server au boot
+
+	// Champs propres a velociraptor
+	VelociraptorArtifactsDir string `json:"velociraptor_artifacts_dir,omitempty"`
+	VelociraptorServerURL    string `json:"velociraptor_server_url,omitempty"`
+	VelociraptorBinaryPath   string `json:"velociraptor_binary_path,omitempty"`
+	VelociraptorServerConfig string `json:"velociraptor_server_config,omitempty"`
+	DistDir                  string `json:"dist_dir,omitempty"`
 }
 
-// Create a default configuration object.
-func GetDefaultConfig() *config_proto.Config {
-	result := &config_proto.Config{
-		Client: &config_proto.ClientConfig{
-			WritebackDarwin: "/etc/velociraptor.writeback.yaml",
-			WritebackLinux:  "/etc/velociraptor.writeback.yaml",
-			WritebackWindows: "$ProgramFiles\\Velociraptor\\" +
-				"velociraptor.writeback.yaml",
-			Level2WritebackSuffix: ".bak",
-			TempdirWindows:        "$ProgramFiles\\Velociraptor\\Tools",
-			MaxPoll:               60,
-
-			// By default restart the client if we are unable to
-			// contact the server within this long. (NOTE - even a
-			// failed connection will reset the counter, the nanny
-			// will only fire if the client has failed in some way -
-			// e.g. the communicator is stopped for some reason).
-			NannyMaxConnectionDelay: 600,
-
-			// Local ring buffer to queue messages to the
-			// server. If the server is not available we
-			// write these to disk so we can send them
-			// next time we are online.
-			LocalBuffer: &config_proto.RingBufferConfig{
-				MemorySize:      50 * 1024 * 1024,
-				DiskSize:        1024 * 1024 * 1024,
-				FilenameLinux:   "/var/tmp/Velociraptor_Buffer.bin",
-				FilenameWindows: "$TEMP/Velociraptor_Buffer.bin",
-				FilenameDarwin:  "/var/tmp/Velociraptor_Buffer.bin",
-			},
-
-			// Specific instructions for the
-			// windows service installer.
-			WindowsInstaller: &config_proto.WindowsInstallerConfig{
-				ServiceName: "Velociraptor",
-				InstallPath: "$ProgramFiles\\Velociraptor\\" +
-					"Velociraptor.exe",
-				ServiceDescription: "Velociraptor service",
-			},
-
-			DarwinInstaller: &config_proto.DarwinInstallerConfig{
-				ServiceName: "com.velocidex.velociraptor",
-				InstallPath: "/usr/local/bin/velociraptor",
-			},
-
-			MaxUploadSize: constants.MAX_POST_SIZE,
-		},
-		API: &config_proto.APIConfig{
-			// Bind port for gRPC endpoint - this should not
-			// normally be exposed.
-			BindAddress: "127.0.0.1",
-			BindPort:    8001,
-			BindScheme:  "tcp",
-		},
-		GUI: &config_proto.GUIConfig{
-			// Bind port for GUI. If you expose this on a
-			// reachable IP address you must enable TLS!
-			BindAddress:  "127.0.0.1",
-			BindPort:     8889,
-			PublicUrl:    "https://localhost:8889/app/index.html",
-			ReverseProxy: []*config_proto.ReverseProxyConfig{},
-			Authenticator: &config_proto.Authenticator{
-				Type: "Basic",
-			},
-			Links: []*config_proto.GUILink{
-				{
-					Text:    "Documentation",
-					Url:     "https://docs.velociraptor.app/",
-					NewTab:  true,
-					Type:    "sidebar",
-					IconUrl: VeloIconDataURL,
-				},
-			},
-		},
-		CA: &config_proto.CAConfig{},
-		Frontend: &config_proto.FrontendConfig{
-			Hostname: "localhost",
-
-			// A public interface for clients to
-			// connect to.
-			BindAddress: "0.0.0.0",
-			BindPort:    8000,
-			DefaultClientMonitoringArtifacts: []string{
-				// Essential for client resource telemetry.
-				"Generic.Client.Stats",
-			},
-			DynDns: &config_proto.DynDNSConfig{},
-			Resources: &config_proto.FrontendResourceControl{
-				ExpectedClients:        30000, // Controls RSA cache size
-				ConnectionsPerSecond:   100,   // QPS load shedding limit (>1000 disable)
-				Concurrency:            0,     // By default 2 * CPU count
-				TargetHeapSize:         0,     // (Disabled) Set to control concurrency to match target heap size.
-				NotificationsPerSecond: 30,
-				MaxUploadSize:          constants.MAX_MEMORY * 2,
-			},
-			GRPCPoolMaxSize: 100,
-			GRPCPoolMaxWait: 60,
-		},
-		Datastore: &config_proto.DatastoreConfig{
-			Implementation: "FileBaseDataStore",
-
-			// Users would probably need to change
-			// this to something more permanent.
-			Location:           "/var/tmp/velociraptor/",
-			FilestoreDirectory: "/var/tmp/velociraptor/",
-
-			// This is the default but we add it here for clarity. Set
-			// to none to disable.
-			Compression: "zlib",
-		},
-		Logging: &config_proto.LoggingConfig{
-			// Disable debug logging by default.
-			Debug: &config_proto.LoggingRetentionConfig{
-				Disabled: true,
-			},
-			Info: &config_proto.LoggingRetentionConfig{
-				RotationTime: 7 * 24 * 60 * 60,   // 7 days
-				MaxAge:       365 * 24 * 60 * 60, // One year
-			},
-			Error: &config_proto.LoggingRetentionConfig{
-				RotationTime: 7 * 24 * 60 * 60,   // 7 days
-				MaxAge:       365 * 24 * 60 * 60, // One year
-			},
-			SeparateLogsPerComponent: true,
-		},
-		Monitoring: &config_proto.MonitoringConfig{
-			BindAddress: "127.0.0.1",
-			BindPort:    8003,
-		},
-		ApiConfig: &config_proto.ApiClientConfig{},
-		Defaults: &config_proto.Defaults{
-			HuntExpiryHours:        24 * 7,
-			NotebookCellTimeoutMin: 10,
-		},
-		Security: &config_proto.Security{},
+// App est la configuration globale chargee au demarrage.
+var App = func() AppConfig {
+	data := configFile
+	if exe, err := os.Executable(); err == nil {
+		diskPath := filepath.Join(filepath.Dir(exe), "config", "config.json")
+		if diskData, err := os.ReadFile(diskPath); err == nil {
+			data = diskData
+		}
 	}
 
-	// The client's version needs to keep in sync with the
-	// server's version.
-	result.Version = GetVersion()
-
-	// Only record some info about the server version.
-	result.Client.ServerVersion = &config_proto.Version{
-		Version:   result.Version.Version,
-		BuildTime: result.Version.BuildTime,
-		Commit:    result.Version.Commit,
+	var cfg AppConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		log.Fatalf("config.json invalide : %v", err)
+	}
+	if cfg.UIPort == "" {
+		cfg.UIPort = "8767"
+	}
+	if cfg.ListenAddress == "" {
+		cfg.ListenAddress = "localhost"
+	}
+	if cfg.Lang == "" {
+		cfg.Lang = "fr"
+	}
+	if cfg.VelociraptorArtifactsDir == "" {
+		cfg.VelociraptorArtifactsDir = "./velociraptor/artifacts/definitions"
+	}
+	if cfg.DistDir == "" {
+		cfg.DistDir = "dist"
+	}
+	if cfg.DefaultModel == "" {
+		// Foundation-Sec 8B = meilleur fit DFIR (cybersec specialise Cisco)
+		cfg.DefaultModel = "Foundation-Sec-8B-Instruct.Q4_K_M.gguf"
 	}
 
-	// On windows we need slightly different defaults.
-	if runtime.GOOS == "windows" {
-		result.Datastore.Location = "C:\\Windows\\Temp"
-		result.Datastore.FilestoreDirectory = "C:\\Windows\\Temp"
+	// Dechiffrement transparent (HFToken + APIKey si format enc:)
+	key, err := loadVaultKey()
+	if err != nil {
+		// Tolere : l'utilisateur peut tres bien n'avoir aucun secret a dechiffrer
+		return cfg
 	}
+	if dec, err := vault.Resolve(cfg.HFToken, key); err == nil {
+		cfg.HFToken = dec
+	}
+	if cfg.APIKey != "" {
+		if dec, err := vault.Resolve(cfg.APIKey, key); err == nil {
+			cfg.APIKey = dec
+		}
+	}
+	return cfg
+}()
 
-	return result
-}
-
-func init() {
-	// Tag the metrics with a build time. This is useful in a cluster
-	// to see if all nodes are upgraded.
-	versionCounter.With(prometheus.Labels{
-		"commit_hash": commit_hash, "build_time": build_time}).Inc()
+// loadVaultKey cherche la cle vault dans l'ordre standard :
+// 1. VELO_VAULT_KEY env, 2. config/.vault.key a cote de l'exe, 3. cwd.
+func loadVaultKey() ([]byte, error) {
+	key, err := vault.LoadKey(vault.KeyPath())
+	if err == nil {
+		return key, nil
+	}
+	cwd, _ := os.Getwd()
+	key, err = vault.LoadKey(filepath.Join(cwd, "config", ".vault.key"))
+	if err == nil {
+		return key, nil
+	}
+	return vault.LoadKey("")
 }

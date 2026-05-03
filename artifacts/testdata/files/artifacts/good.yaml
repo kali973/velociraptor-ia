@@ -1,3 +1,0 @@
-name: Good
-sources:
-- query: SELECT * FROM info()
